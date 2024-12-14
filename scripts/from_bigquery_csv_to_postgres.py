@@ -12,12 +12,13 @@ if __name__ == '__main__':
     config = Box.from_yaml(filename="../config.yaml")
 
     # Connect to Postgres
-    engine= sqlalchemy.create_engine(
+    engine = sqlalchemy.create_engine(
         f"postgresql://{config.POSTGRES.USERNAME}:{config.POSTGRES.PASSWORD}@{config.POSTGRES.HOST}:{config.POSTGRES.PORT}/{config.POSTGRES.DATABASE}"
     )
     connection = engine.connect()
     # Read the CSV file
     df = pd.read_csv(f"../data/{job_config['source_csv_filename']}.csv")
+    df.columns = df.columns.str.lower()
 
     # Write the DataFrame to the PostgreSQL database
     df.to_sql(
