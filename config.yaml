@@ -1,0 +1,9 @@
+ENVIRONMENT: "prod"
+POSTGRES:
+  HOST: "193.2.72.43"
+  PORT: 5000
+  USERNAME: "pgAdminEutopia"
+  PASSWORD: "4AZ9sCLZReG2ZobggcoK"
+  DATABASE: "lojze"
+  SCHEMA: "analitik"
+  BQ_SCHEMA: "bigquery_legacy"
