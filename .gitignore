@@ -170,3 +170,5 @@ cython_debug/
 data/
 models/
 results/
+
+config.yaml

@@ -20,3 +20,8 @@ pip install torch-sparse -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
 pip install pyg-lib -f https://data.pyg.org/whl/nightly/torch-2.4.0+cpu.html
 pip install git+https://github.com/pyg-team/pytorch_geometric.git
 ```
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8080
+
+```

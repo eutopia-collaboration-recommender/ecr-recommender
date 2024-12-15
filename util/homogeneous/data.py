@@ -10,14 +10,22 @@ from typing_extensions import Tuple
 from util.postgres import query
 
 
-def query_nodes_author(conn: psycopg2.extensions.connection) -> pd.DataFrame:
+def query_nodes_author(conn: psycopg2.extensions.connection, requires_only_identifier: bool = False) -> pd.DataFrame:
     # Get all authors data and value metrics about their collaboration
-    author_query: str = f"""
-    SELECT author_sid,
-           publication_count,
-           embedding_tensor_data
-    FROM lojze.bigquery_legacy.graph_homogeneous_node_author
-    """
+    if requires_only_identifier:
+        author_query: str = f"""
+        SELECT author_sid
+        FROM lojze.bigquery_legacy.graph_homogeneous_node_author
+        ORDER BY author_sid
+        """
+    else:
+        author_query: str = f"""
+        SELECT author_sid
+        , publication_count
+        , embedding_tensor_data
+        FROM lojze.bigquery_legacy.graph_homogeneous_node_author
+        ORDER BY author_sid
+        """
 
     author_df: pd.DataFrame = query(conn=conn, query=author_query)
     return author_df
@@ -25,14 +33,14 @@ def query_nodes_author(conn: psycopg2.extensions.connection) -> pd.DataFrame:
 
 def query_edges_co_authors(conn: psycopg2.extensions.connection) -> pd.DataFrame:
     # Get all edges between authors and co-authors
-    coauthored_query = f"""
+    coauthored_query: str = f"""
     SELECT author_sid,
            co_author_sid,
            time
     FROM lojze.bigquery_legacy.graph_homogeneous_edge_co_authors_not_null
     where author_sid is not null and co_author_sid is not null
     """
-    coauthored_df = query(conn=conn, query=coauthored_query)
+    coauthored_df: pd.DataFrame = query(conn=conn, query=coauthored_query)
     return coauthored_df
 
 
@@ -180,3 +188,38 @@ def to_pyg_data(x_author: torch.Tensor,
     assert_bidirectional_edges(data)
 
     return data
+
+
+def build_homogeneous_graph(conn: psycopg2.extensions.connection) -> Tuple[Data, dict, dict]:
+    author_df: pd.DataFrame = query_nodes_author(conn=conn)
+    co_authored_df: pd.DataFrame = query_edges_co_authors(conn=conn)
+
+    # Get the mapping to contiguous IDs
+    author_id_map: dict
+    author_sid_map: dict
+    author_id_map, author_sid_map = get_mapper_to_contiguous_ids(node_df=author_df,
+                                                                 node_id_column='author_sid')
+    # Apply the mapping to the dataframes
+    author_df['author_node_id'] = author_df['author_sid'].map(author_id_map)
+    co_authored_df['author_node_id'] = co_authored_df['author_sid'].map(author_id_map)
+    co_authored_df['co_author_node_id'] = co_authored_df['co_author_sid'].map(author_id_map)
+
+    # Get node attributes
+    x_author: torch.Tensor
+    node_ids_author: torch.Tensor
+    x_author, node_ids_author = get_node_attributes_author(author_df=author_df)
+    # Get edge attributes
+    edge_index_co_authors: torch.Tensor
+    edge_attr_co_authors: torch.Tensor
+    edge_time_co_authors: torch.Tensor
+    edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors = get_edge_attributes_co_authors(
+        co_authored_df=co_authored_df)
+
+    # Create the PyG Data object
+    data = to_pyg_data(x_author=x_author,
+                       node_ids_author=node_ids_author,
+                       edge_index_co_authors=edge_index_co_authors,
+                       edge_attr_co_authors=edge_attr_co_authors,
+                       edge_time_co_authors=edge_time_co_authors)
+    # Return the PyG Data object
+    return data, author_id_map, author_sid_map
