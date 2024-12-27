@@ -28,16 +28,16 @@ class ModelEuCoHM(torch.nn.Module):
                  input_channels: int,
                  hidden_channels: int,
                  k: int,
-                 author_id_map: dict,
-                 author_sid_map: dict):
+                 author_node_id_map: dict,
+                 author_id_map: dict):
         super().__init__()
 
         self.hidden_channels = hidden_channels
         self.k = k
 
         # Set mapper to contiguous ids
+        self.author_node_id_map: dict = author_node_id_map
         self.author_id_map: dict = author_id_map
-        self.author_sid_map: dict = author_sid_map
 
         # Initialize the convolutional layers
         self.conv_layers = ModuleList([
@@ -95,14 +95,14 @@ class ModelEuCoHM(torch.nn.Module):
     def recommend(self,
                   x: Tensor,
                   edge_index: Adj,
-                  author_sid: str,
+                  author_id: str,
                   k: int = 10) -> list:
 
         # Get all embeddings
         out_src = out_dst = self.get_embedding(x, edge_index)
 
         # Get the author id
-        author_id = self.author_id_map[author_sid]
+        author_id = self.author_node_id_map[author_id]
         # Get the author embedding
         out_src = out_src[author_id]
 
@@ -112,9 +112,9 @@ class ModelEuCoHM(torch.nn.Module):
         top_index = pred.topk(k, dim=-1, sorted=True).indices
 
         # Decode top k recommendations to author SIDs
-        top_author_sids = [self.author_sid_map[int(i)] for i in top_index]
+        top_author_ids = [self.author_id_map[int(i)] for i in top_index]
 
-        return top_author_sids
+        return top_author_ids
 
     def forward(self,
                 x: Tensor,

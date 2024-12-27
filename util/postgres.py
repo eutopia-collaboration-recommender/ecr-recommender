@@ -1,6 +1,7 @@
 from io import StringIO
 
 import pandas as pd
+import polars as pl
 import psycopg2
 import sqlalchemy.engine.base
 from sqlalchemy import create_engine, Engine
@@ -153,6 +154,19 @@ def query(conn: sqlalchemy.engine.base.Connection, query: str) -> pd.DataFrame:
     """
     # Fetch the data
     df = pd.read_sql(query, conn)
+    # Return the DataFrame
+    return df
+
+
+def query_polars(conn: sqlalchemy.engine.base.Connection, query: str) -> pl.DataFrame:
+    """
+    Query Postgres.
+    :param conn: Postgres connection
+    :param query: SQL query
+    :return: Pandas DataFrame with the data
+    """
+    # Fetch the data
+    df = pl.read_database(query, conn)
     # Return the DataFrame
     return df
 

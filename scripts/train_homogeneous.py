@@ -73,18 +73,18 @@ def main(engine: Engine,
 
     # Build the homogeneous graph
     data: Data
+    author_node_id_map: dict
     author_id_map: dict
-    author_sid_map: dict
     dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine)
-    data, author_id_map, author_sid_map = dataset.build_homogeneous_graph()
+    data, author_node_id_map, author_id_map = dataset.build_homogeneous_graph()
 
     # Initialize the model
     model = ModelEuCoHM(
         input_channels=data.num_features,
         hidden_channels=model_config['hidden_channels'],
         k=model_config['num_recommendations'],
-        author_id_map=author_id_map,
-        author_sid_map=author_sid_map
+        author_node_id_map=author_node_id_map,
+        author_id_map=author_id_map
     ).to(device)
 
     # Transfer to device
