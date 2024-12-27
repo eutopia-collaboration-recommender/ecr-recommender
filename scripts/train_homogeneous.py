@@ -2,16 +2,18 @@ from typing import Tuple
 
 import pandas as pd
 import psycopg2
+import sqlalchemy
 import torch
 from box import Box
+from sqlalchemy import Engine
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch_geometric.data import Data
 from tqdm import tqdm
 
-from util.homogeneous.data import build_homogeneous_graph
+from util.homogeneous.dataset import DatasetEuCoHM
 from util.homogeneous.model import evaluate, ModelEuCoHM, test, train
-from util.postgres import create_connection
+from util.postgres import create_connection, create_sqlalchemy_engine
 
 
 def train_and_evaluate(model: ModelEuCoHM,
@@ -65,7 +67,7 @@ def train_and_evaluate(model: ModelEuCoHM,
     return results
 
 
-def main(conn: psycopg2.extensions.connection,
+def main(engine: Engine,
          model_config: dict) -> None:
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -73,7 +75,8 @@ def main(conn: psycopg2.extensions.connection,
     data: Data
     author_id_map: dict
     author_sid_map: dict
-    data, author_id_map, author_sid_map = build_homogeneous_graph(conn=connection)
+    dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine)
+    data, author_id_map, author_sid_map = dataset.build_homogeneous_graph()
 
     # Initialize the model
     model = ModelEuCoHM(
@@ -131,14 +134,14 @@ if __name__ == '__main__':
         hidden_channels=config.MODEL.HOMOGENEOUS.HIDDEN_CHANNELS
     )
     # Connect to Postgres
-    connection: psycopg2.extensions.connection = create_connection(
+    engine: Engine = create_sqlalchemy_engine(
         username=config.POSTGRES.USERNAME,
         password=config.POSTGRES.PASSWORD,
         host=config.POSTGRES.HOST,
         port=config.POSTGRES.PORT,
         database=config.POSTGRES.DATABASE,
-        schema=config.POSTGRES.BQ_SCHEMA
+        schema=config.POSTGRES.SCHEMA
     )
 
     # Read data from Postgres
-    main(conn=connection, model_config=model_config)
+    main(engine=engine, model_config=model_config)

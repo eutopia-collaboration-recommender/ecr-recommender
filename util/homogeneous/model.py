@@ -21,7 +21,6 @@ from torch_geometric.metrics.link_pred import (
 )
 
 from util.torch_geometric import LinkPredHitRate
-from util.homogeneous.data import query_nodes_author, get_mapper_to_contiguous_ids
 
 
 class ModelEuCoHM(torch.nn.Module):
