@@ -145,7 +145,7 @@ def write_table(conn: psycopg2.extensions.connection,
     return len(df)
 
 
-def query(conn: sqlalchemy.engine.base.Connection, query: str) -> pd.DataFrame:
+def query(conn: sqlalchemy.engine.base.Connection, query_str: str) -> pd.DataFrame:
     """
     Query Postgres.
     :param conn: Postgres connection
@@ -153,12 +153,12 @@ def query(conn: sqlalchemy.engine.base.Connection, query: str) -> pd.DataFrame:
     :return: Pandas DataFrame with the data
     """
     # Fetch the data
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query_str, conn)
     # Return the DataFrame
     return df
 
 
-def query_polars(conn: sqlalchemy.engine.base.Connection, query: str) -> pl.DataFrame:
+def query_polars(conn: sqlalchemy.engine.base.Connection, query_str: str) -> pl.DataFrame:
     """
     Query Postgres.
     :param conn: Postgres connection
@@ -166,7 +166,7 @@ def query_polars(conn: sqlalchemy.engine.base.Connection, query: str) -> pl.Data
     :return: Pandas DataFrame with the data
     """
     # Fetch the data
-    df = pl.read_database(query, conn)
+    df = pl.read_database(query_str, conn)
     # Return the DataFrame
     return df
 

@@ -32,7 +32,7 @@ class DatasetEuCoBase:
         FROM g_included_author
         """
         self.logger.debug("Querying author nodes...")
-        author_df: pd.DataFrame = query(conn=conn, query=author_query)
+        author_df: pd.DataFrame = query(conn=conn, query_str=author_query)
         self.logger.info(f"Number of author nodes found: {len(author_df)}")
 
         return author_df
@@ -46,7 +46,7 @@ class DatasetEuCoBase:
         FROM g_eucohm_edge_co_authors
         """
         self.logger.debug("Querying co-authorship edge data...")
-        coauthored_df = query(conn=conn, query=coauthored_query)
+        coauthored_df = query(conn=conn, query_str=coauthored_query)
         self.logger.info(f"Number of co-authorship edges found: {len(coauthored_df)}")
         return coauthored_df
 

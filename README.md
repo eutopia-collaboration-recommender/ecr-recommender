@@ -74,6 +74,16 @@ Finally, we install the remaining libraries:
 pip install -r requirements.txt
 ```
 
+## Training recommender systems
+
+After setting up the environment, we can train the recommender systems. The training scripts are located in the
+`scripts` folder. It currently includes training scripts for the following models:
+- `train_baseline.py`: Baseline model built on LightGCN architecture on a homogeneous graph of authors.
+- `train_homogeneous.py`: A graph attention neural network (GAT) model on a homogeneous graph of authors including their
+research interests through aggregated article embeddings.
+- `train_heterogeneous.py`: 
+
+
 ### Running the FastAPI server for model inference
 
 We run the FastAPI server for model inference. The API can be run using the following command:

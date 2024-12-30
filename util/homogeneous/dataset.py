@@ -24,7 +24,7 @@ def query_nodes_author(conn: sqlalchemy.engine.base.Connection,
     FROM {table_name}
     """
     print("Querying author nodes...")
-    author_df: pd.DataFrame = query(conn=conn, query=author_query)
+    author_df: pd.DataFrame = query(conn=conn, query_str=author_query)
 
     return author_df
 
@@ -78,7 +78,7 @@ def query_edges_co_authors(conn: sqlalchemy.engine.base.Connection) -> pd.DataFr
     FROM g_eucohm_edge_co_authors
     """
     print("Querying co-authorship edge data...")
-    coauthored_df = query(conn=conn, query=coauthored_query)
+    coauthored_df = query(conn=conn, query_str=coauthored_query)
 
     return coauthored_df
 

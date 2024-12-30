@@ -80,14 +80,13 @@ class ModelEuCoHM(torch.nn.Module):
         # Activate first layer, since it is not of the same size as the target embedding
         x = self.conv_layers[0](x, edge_index)
         x = self.bn_layers[0](x)
-        # x = F.relu(x)
+
         out = x * self.alpha[0]
 
         # Activate all other layers
         for i in range(1, self.num_layers):
             x = self.conv_layers[i](x, edge_index)
             x = self.bn_layers[i](x)
-            # x = F.relu(x)
             out = out + x * self.alpha[i + 1]
 
         return out
