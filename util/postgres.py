@@ -1,10 +1,15 @@
 from io import StringIO
 
+import numpy as np
 import pandas as pd
 import polars as pl
 import psycopg2
 import sqlalchemy.engine.base
+import torch
 from sqlalchemy import create_engine, Engine
+
+from util.baseline.model import ModelEuCoBase
+from util.homogeneous.model import ModelEuCoHM
 
 
 def create_connection(username: str,
@@ -181,3 +186,37 @@ def use_schema(conn: psycopg2.extensions.connection, schema: str) -> None:
     conn.cursor().execute(f'SET search_path TO {schema}')
     # Commit the transaction
     conn.commit()
+
+
+def save_author_embeddings(engine: Engine,
+                           model: ModelEuCoHM | ModelEuCoBase,
+                           x: torch.Tensor,
+                           edge_index: torch.Tensor,
+                           author_id_map: dict,
+                           target_table: str) -> None:
+    """
+
+    :param author_id_map:
+    :param engine:
+    :param model:
+    :param x:
+    :param edge_index:
+    :param target_table:
+    :return:
+    """
+    # Get the embeddings
+    embeddings: torch.Tensor = model.get_embedding(x=x, edge_index=edge_index)
+
+    # Add author IDs
+    with torch.no_grad():
+        embeddings_arr: np.ndarray = embeddings.numpy()
+        authors: list = list()
+        for ix, embedding in enumerate(embeddings_arr):
+            authors.append(dict(
+                author_id=author_id_map[ix],
+                embedding_tensor_data='{' + ','.join(map(str, embedding.tolist())) + '}'
+            ))
+        authors_df = pd.DataFrame(authors)
+
+    # Write the embeddings to Postgres
+    authors_df.to_sql(target_table, engine, if_exists='replace', index=False)

@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from util.homogeneous.dataset import DatasetEuCoHM
 from util.homogeneous.model import evaluate, ModelEuCoHM, test, train
-from util.postgres import create_connection, create_sqlalchemy_engine
+from util.postgres import create_connection, create_sqlalchemy_engine, save_author_embeddings
 
 
 def train_and_evaluate(model: ModelEuCoHM,
@@ -111,6 +111,16 @@ def main(engine: Engine,
         optimizer=optimizer,
         scheduler=scheduler,
         model_config=model_config
+    )
+
+    # Save author embeddings to Postgres
+    save_author_embeddings(
+        model=model,
+        engine=engine,
+        x=data.x,
+        edge_index=data.edge_index,
+        author_id_map=author_id_map,
+        target_table='author_embedding'
     )
 
     # Save results
