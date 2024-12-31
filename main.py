@@ -6,14 +6,14 @@ from pydantic import BaseModel
 from torch_geometric.data import Data
 from contextlib import asynccontextmanager
 
-from util.homogeneous.data import build_homogeneous_graph
+from util.homogeneous.dataset import DatasetEuCoHM
 from util.homogeneous.model import ModelEuCoHM
-from util.postgres import create_connection
+from util.postgres import create_sqlalchemy_engine
 
 
 # Define the API schema
 class InferenceRequest(BaseModel):
-    author_sid: str
+    author_id: str
 
 
 # Global variables for model
@@ -28,26 +28,25 @@ async def lifespan(app: FastAPI):
     config: Box = Box.from_yaml(filename="config.yaml")
 
     # Connect to Postgres
-    connection = create_connection(
+    engine = create_sqlalchemy_engine(
         username=config.POSTGRES.USERNAME,
         password=config.POSTGRES.PASSWORD,
         host=config.POSTGRES.HOST,
         port=config.POSTGRES.PORT,
         database=config.POSTGRES.DATABASE,
-        schema=config.POSTGRES.BQ_SCHEMA
+        schema=config.POSTGRES.SCHEMA
     )
 
     # Build the homogeneous graph
     data: Data
+    author_node_id_map: dict
     author_id_map: dict
-    author_sid_map: dict
-    data, author_id_map, author_sid_map = build_homogeneous_graph(
-        conn=connection
-    )
+
+    data, author_node_id_map, author_id_map = DatasetEuCoHM(pg_engine=engine).build_homogeneous_graph()
     datasets['EuCoHM'] = dict(
         data=data,
-        author_id_map=author_id_map,
-        author_sid_map=author_sid_map
+        author_node_id_map=author_node_id_map,
+        author_id_map=author_id_map
     )
 
     # Initiate and load the model
@@ -55,8 +54,8 @@ async def lifespan(app: FastAPI):
         input_channels=datasets['EuCoHM']['data'].num_features,
         hidden_channels=config.MODEL.HOMOGENEOUS.HIDDEN_CHANNELS,
         k=config.MODEL.HOMOGENEOUS.NUM_RECOMMENDATIONS,
-        author_id_map=datasets['EuCoHM']['author_id_map'],
-        author_sid_map=datasets['EuCoHM']['author_sid_map']
+        author_node_id_map=datasets['EuCoHM']['author_node_id_map'],
+        author_id_map=datasets['EuCoHM']['author_id_map']
     )
 
     #  Load the model weights
@@ -68,8 +67,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # FastAPI: Shutdown logic
-    if connection:
-        connection.close()
+    if engine:
+        engine.dispose()
         print("Database connection closed")
 
 
@@ -80,10 +79,10 @@ app = FastAPI(lifespan=lifespan)
 async def predict(request: InferenceRequest) -> list:
     # Use the preloaded model to make predictions
     model: ModelEuCoHM = models['EuCoHM']
-    author_sid: str = request.author_sid
+    author_id: str = request.author_id
+    print(f'Querying recommendations for author: {author_id}')
 
     recommendations: list = model.recommend(x=datasets['EuCoHM']['data'].x,
                                             edge_index=datasets['EuCoHM']['data'].train_pos_edge_index,
-                                            author_sid=author_sid)
-
+                                            author_id=author_id)
     return recommendations

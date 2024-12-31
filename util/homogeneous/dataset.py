@@ -87,7 +87,7 @@ class DatasetEuCoHM:
     def __init__(self, pg_engine: Engine):
         self.engine: Engine = pg_engine
         self.table_name: str = 'g_eucohm_node_author'
-        self.data: Data = self.build_homogeneous_graph()
+        self.data: Data = None
 
     def build_homogeneous_graph(self) -> (Data, dict, dict):
         with  self.engine.connect() as conn:
