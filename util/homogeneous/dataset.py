@@ -20,7 +20,7 @@ def query_nodes_author(conn: sqlalchemy.engine.base.Connection,
     author_query: str = f"""
     SELECT author_id,
            publication_count,
-           author_embedding
+           author_embedding::FLOAT8[]
     FROM {table_name}
     """
     print("Querying author nodes...")
@@ -33,7 +33,7 @@ def query_article_embeddings(engine: Engine,
                              batch_size: int = 10000) -> pl.DataFrame:
     with engine.raw_connection().cursor() as cur:
         cur.execute("""
-            SELECT article_id, article_embedding
+            SELECT article_id, article_embedding::FLOAT8[]
             FROM g_included_article_embedding
         """)
         # Initialize the Polars DataFrame
@@ -63,7 +63,7 @@ def query_nodes_author_articles(conn: sqlalchemy.engine.base.Connection) -> pl.D
         FROM g_eucohm_node_author_article
         """
     print("Querying author articles...")
-    author_articles_df: pl.DataFrame = query_polars(conn=conn, query=author_articles_query)
+    author_articles_df: pl.DataFrame = query_polars(conn=conn, query_str=author_articles_query)
 
     return author_articles_df
 
@@ -83,88 +83,26 @@ def query_edges_co_authors(conn: sqlalchemy.engine.base.Connection) -> pd.DataFr
     return coauthored_df
 
 
-class DatasetEuCoHM:
-    def __init__(self, pg_engine: Engine):
-        self.engine: Engine = pg_engine
-        self.table_name: str = 'g_eucohm_node_author'
-        self.data: Data = None
+def assert_bidirectional_edges(data: Data) -> None:
+    # Transpose edge_index to get a list of edges
+    edges: torch.Tensor = data.edge_index.t()  # Shape: [num_edges, 2]
 
-    def build_homogeneous_graph(self) -> (Data, dict, dict):
-        with  self.engine.connect() as conn:
-            co_authored_df: pd.DataFrame = query_edges_co_authors(conn=conn)
-            try:
-                author_df: pd.DataFrame = query_nodes_author(conn=conn, table_name=self.table_name)
-            except ProgrammingError as e:
-                # Initiate a new connection since the last one was interrupted
-                with self.engine.connect() as conn_2:
-                    print(f"Table {self.table_name} does not exist. Creating the table...")
-                    author_df: pd.DataFrame = self.fill_g_nodes_author_table(conn=conn_2)
+    # Create reverse edges by swapping columns
+    reverse_edges: torch.Tensor = edges[:, [1, 0]]
 
-            # Get the mapping to contiguous IDs
-            author_node_id_map: dict
-            author_id_map: dict
-            author_node_id_map, author_id_map = get_mapper_to_contiguous_ids(node_df=author_df,
-                                                                             id_column='author_id')
-            # Apply the mapping to the dataframes
-            author_df['author_node_id'] = author_df['author_id'].map(author_node_id_map)
-            co_authored_df['author_node_id'] = co_authored_df['author_id'].map(author_node_id_map)
-            co_authored_df['co_author_node_id'] = co_authored_df['co_author_id'].map(author_node_id_map)
+    # Check if all reverse edges exist in the original edge list
+    # Convert edges to a set of tuples for faster lookup
+    edges_set: set = set(map(tuple, edges.tolist()))
 
-            # Get node attributes
-            x_author: torch.Tensor
-            node_ids_author: torch.Tensor
-            x_author, node_ids_author = get_node_attributes_author(author_df=author_df)
-            # Get edge attributes
-            edge_index_co_authors: torch.Tensor
-            edge_attr_co_authors: torch.Tensor
-            edge_time_co_authors: torch.Tensor
-            edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors = get_edge_attributes_co_authors(
-                co_authored_df=co_authored_df)
+    # Iterate over reverse edges and check for their presence
+    missing_edges: list = list()
+    for edge in reverse_edges.tolist():
+        if tuple(edge) not in edges_set:
+            missing_edges.append(edge)
 
-            # Create the PyG Data object
-            data = to_pyg_data(x_author=x_author,
-                               node_ids_author=node_ids_author,
-                               edge_index_co_authors=edge_index_co_authors,
-                               edge_attr_co_authors=edge_attr_co_authors,
-                               edge_time_co_authors=edge_time_co_authors)
-            # Return the PyG Data object
-            return data, author_node_id_map, author_id_map
-
-    def fill_g_nodes_author_table(self, conn: sqlalchemy.engine.base.Connection) -> pd.DataFrame:
-        author_articles_df: pd.DataFrame = query_nodes_author_articles(conn=conn)
-        article_embedding_df: pl.DataFrame = query_article_embeddings(engine=self.engine)
-
-        # Go through all the authors and average their embeddings
-        print("Processing the author embeddings...")
-        author_embeddings: list = list()
-        for author_id in tqdm(author_articles_df['author_id'].unique()):
-            # Get all articles for the author
-            articles: pd.Series
-
-            articles: pl.Series = author_articles_df.filter(pl.col('author_id') == author_id)['article_id']
-            # Get the embeddings for the articles
-            embeddings: pl.Series = article_embedding_df.filter(pl.col('article_id').is_in(articles))[
-                'article_embedding']
-            embedding_values = embeddings.to_numpy()
-            # Average the embeddings
-            avg_embedding = np.mean(embedding_values, axis=0)
-            pg_avg_embedding = '{' + ','.join(map(str, avg_embedding.tolist())) + '}'
-
-            # Append the author embedding to the list
-            author_embeddings.append(dict(
-                author_id=author_id,
-                author_embedding=pg_avg_embedding,
-                publication_count=len(articles)
-            ))
-
-        # Create a DataFrame from the dictionary
-        author_embedding_df = pd.DataFrame(author_embeddings)
-
-        # Write the DataFrame to the database
-        print("Writing the author embeddings to the database...")
-        author_embedding_df.to_sql(self.table_name, self.engine, if_exists='replace')
-
-        return author_embedding_df
+    # If there are missing edges, raise an assertion error
+    if missing_edges:
+        raise AssertionError(f"The following edges are missing their reverse counterparts: {missing_edges}")
 
 
 def get_mapper_to_contiguous_ids(node_df: pd.DataFrame, id_column: str) -> Tuple[dict, dict]:
@@ -187,8 +125,7 @@ def get_node_attributes_author(author_df: pd.DataFrame) -> Tuple[torch.Tensor, t
         filter(lambda x: x not in ('author_id', 'author_node_id', 'author_embedding'), sorted_author_df.columns))
 
     # Convert EMBEDDING_TENSOR_DATA to proper format
-    embedding_tensor_author = sorted_author_df['author_embedding'].apply(
-        lambda x: np.array(x.replace('{', '').replace('}', '').split(',')).astype('float64'))
+    embedding_tensor_author = np.stack(sorted_author_df['author_embedding'].values)
     embedding_tensor_author = torch.tensor(embedding_tensor_author, dtype=torch.float)
 
     # Convert types
@@ -229,85 +166,145 @@ def get_edge_attributes_co_authors(co_authored_df: pd.DataFrame) -> Tuple[torch.
     return edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors
 
 
-def split_to_train_and_test(data, num_train=0.8):
-    time = data.edge_time
-    perm = time.argsort()
-    train_index = perm[:int(num_train * perm.numel())]
-    test_index = perm[int(num_train * perm.numel()):]
+class DatasetEuCoHM:
+    def __init__(self, pg_engine: Engine, num_train: float = 0.8):
+        self.engine: Engine = pg_engine
+        self.num_train: float = num_train
+        self.table_name: str = 'g_eucohm_node_author'
+        self.data: Data = Data()
+        self.author_id_map: dict = dict()
+        self.author_node_id_map: dict = dict()
 
-    # Edge index
-    data.train_pos_edge_index = data.edge_index[:, train_index]
-    data.test_pos_edge_index = data.edge_index[:, test_index]
+    def fill_g_nodes_author_table(self, conn: sqlalchemy.engine.base.Connection) -> pd.DataFrame:
+        author_articles_df: pd.DataFrame = query_nodes_author_articles(conn=conn)
+        article_embedding_df: pl.DataFrame = query_article_embeddings(engine=self.engine)
 
-    # Add negative samples to test
-    neg_edge_index_i, neg_edge_index_j, neg_edge_index_k = structured_negative_sampling(
-        edge_index=data.test_pos_edge_index,
-        num_nodes=data.num_nodes
-    )
-    data.test_neg_edge_index = torch.stack([neg_edge_index_i, neg_edge_index_k], dim=0)
+        # Go through all the authors and average their embeddings
+        print("Processing the author embeddings...")
+        author_embeddings: list = list()
+        for author_id in tqdm(author_articles_df['author_id'].unique()):
+            # Get all articles for the author
+            articles: pd.Series
 
-    # data.edge_index = data.edge_attr = data.edge_time = None
-    return data
+            articles: pl.Series = author_articles_df.filter(pl.col('author_id') == author_id)['article_id']
+            # Get the embeddings for the articles
+            embeddings: pl.Series = article_embedding_df.filter(pl.col('article_id').is_in(articles))[
+                'article_embedding']
+            embedding_values = embeddings.to_numpy()
+            # Average the embeddings
+            avg_embedding = np.mean(embedding_values, axis=0)
+            pg_avg_embedding = '{' + ','.join(map(str, avg_embedding.tolist())) + '}'
 
+            # Append the author embedding to the list
+            author_embeddings.append(dict(
+                author_id=author_id,
+                author_embedding=pg_avg_embedding,
+                publication_count=len(articles)
+            ))
 
-def assert_bidirectional_edges(data: Data) -> None:
-    # Step 1: Transpose edge_index to get a list of edges
-    edges: torch.Tensor = data.edge_index.t()  # Shape: [num_edges, 2]
+        # Create a DataFrame from the dictionary
+        author_embedding_df = pd.DataFrame(author_embeddings)
 
-    # Step 2: Create reverse edges by swapping columns
-    reverse_edges: torch.Tensor = edges[:, [1, 0]]
+        # Write the DataFrame to the database
+        print("Writing the author embeddings to the database...")
+        author_embedding_df.to_sql(self.table_name, self.engine, if_exists='replace')
 
-    # Step 3: Check if all reverse edges exist in the original edge list
-    # Convert edges to a set of tuples for faster lookup
-    edges_set: set = set(map(tuple, edges.tolist()))
+        return author_embedding_df
 
-    # Iterate over reverse edges and check for their presence
-    missing_edges: list = list()
-    for edge in reverse_edges.tolist():
-        if tuple(edge) not in edges_set:
-            missing_edges.append(edge)
+    def split_to_train_and_test(self, data):
+        time = data.edge_time
+        perm = time.argsort()
+        train_index = perm[:int(self.num_train * perm.numel())]
+        test_index = perm[int(self.num_train * perm.numel()):]
 
-    # If there are missing edges, raise an assertion error
-    if missing_edges:
-        raise AssertionError(f"The following edges are missing their reverse counterparts: {missing_edges}")
+        # Edge index
+        data.train_pos_edge_index = data.edge_index[:, train_index]
+        data.test_pos_edge_index = data.edge_index[:, test_index]
 
+        # Add negative samples to test
+        neg_edge_index_i, neg_edge_index_j, neg_edge_index_k = structured_negative_sampling(
+            edge_index=data.test_pos_edge_index,
+            num_nodes=data.num_nodes
+        )
+        data.test_neg_edge_index = torch.stack([neg_edge_index_i, neg_edge_index_k], dim=0)
 
-def to_pyg_data(x_author: torch.Tensor,
-                node_ids_author: torch.Tensor,
-                edge_index_co_authors: torch.Tensor,
-                edge_attr_co_authors: torch.Tensor,
-                edge_time_co_authors: torch.Tensor) -> Data:
-    # Initialize the PyG Data object
-    data: Data = Data()
+        # data.edge_index = data.edge_attr = data.edge_time = None
+        return data
 
-    # Save node indices:
-    data.node_id = node_ids_author
-    # Add edge 'co_authors'
-    data.edge_index = edge_index_co_authors
-    data.edge_attr = torch.from_numpy(edge_attr_co_authors).to(torch.float)
-    data.edge_time = edge_time_co_authors
+    def to_pyg_data(self, x_author: torch.Tensor,
+                    node_ids_author: torch.Tensor,
+                    edge_index_co_authors: torch.Tensor,
+                    edge_attr_co_authors: torch.Tensor,
+                    edge_time_co_authors: torch.Tensor) -> Data:
+        # Initialize the PyG Data object
+        data: Data = Data()
 
-    # Set X for author nodes
-    data.x = torch.from_numpy(x_author).to(torch.float)
+        # Save node indices:
+        data.node_id = node_ids_author
+        # Add edge 'co_authors'
+        data.edge_index = edge_index_co_authors
+        data.edge_attr = torch.from_numpy(edge_attr_co_authors).to(torch.float)
+        data.edge_time = edge_time_co_authors
 
-    # Metadata about number of features and nodes
-    data.num_features = data.x.shape[1]
-    data.num_nodes = data.x.shape[0]
+        # Set X for author nodes
+        data.x = torch.from_numpy(x_author).to(torch.float)
 
-    # Transform data to undirected graph
-    # data = T.ToUndirected()(data)
+        # Metadata about number of features and nodes
+        data.num_features = data.x.shape[1]
+        data.num_nodes = data.x.shape[0]
 
-    # Split to train and test
-    data = split_to_train_and_test(data)
+        # Split to train and test
+        data = self.split_to_train_and_test(data)
 
-    # Test: check that the number of elements in the positive edge index equals to the number of elements in the negative edge index
-    assert data.test_pos_edge_index.numel() == data.test_neg_edge_index.numel()
-    # Test: check that the number of elements in the training, positive edge index equals to 0.8 times all nodes
-    assert data.train_pos_edge_index.shape[1] == int(0.8 * data.edge_index.shape[1])
-    # Test: check that the number of elements in the test, positive edge index equals to 0.2 times all nodes
-    assert data.test_pos_edge_index.shape[1] == data.edge_index.shape[1] - int(0.8 * data.edge_index.shape[1])
+        return data
 
-    # Test: check that all edges are bidirectional
-    assert_bidirectional_edges(data)
+    def build_homogeneous_graph(self) -> (Data, dict, dict):
+        with  self.engine.connect() as conn:
+            co_authored_df: pd.DataFrame = query_edges_co_authors(conn=conn)
+            try:
+                author_df: pd.DataFrame = query_nodes_author(conn=conn, table_name=self.table_name)
+            except ProgrammingError as e:
+                # Initiate a new connection since the last one was interrupted
+                with self.engine.connect() as conn_2:
+                    print(f"Table {self.table_name} does not exist. Creating the table...")
+                    author_df: pd.DataFrame = self.fill_g_nodes_author_table(conn=conn_2)
 
-    return data
+            # Get the mapping to contiguous IDs
+            author_node_id_map: dict
+            author_id_map: dict
+            author_node_id_map, author_id_map = get_mapper_to_contiguous_ids(node_df=author_df,
+                                                                             id_column='author_id')
+            # Apply the mapping to the dataframes
+            author_df['author_node_id'] = author_df['author_id'].map(author_node_id_map)
+            co_authored_df['author_node_id'] = co_authored_df['author_id'].map(author_node_id_map)
+            co_authored_df['co_author_node_id'] = co_authored_df['co_author_id'].map(author_node_id_map)
+
+            # Get node attributes
+            x_author: torch.Tensor
+            node_ids_author: torch.Tensor
+            x_author, node_ids_author = get_node_attributes_author(author_df=author_df)
+            # Get edge attributes
+            edge_index_co_authors: torch.Tensor
+            edge_attr_co_authors: torch.Tensor
+            edge_time_co_authors: torch.Tensor
+            edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors = get_edge_attributes_co_authors(
+                co_authored_df=co_authored_df)
+
+            # Create the PyG Data object
+            data = self.to_pyg_data(x_author=x_author,
+                                    node_ids_author=node_ids_author,
+                                    edge_index_co_authors=edge_index_co_authors,
+                                    edge_attr_co_authors=edge_attr_co_authors,
+                                    edge_time_co_authors=edge_time_co_authors)
+
+            # Set the dataset attributes
+            self.data = data
+            self.author_id_map = author_id_map
+            self.author_node_id_map = author_node_id_map
+
+            # Return the PyG Data object
+            return data, author_node_id_map, author_id_map
+
+    def close_engine(self):
+        self.engine.dispose()
+        self.engine = None

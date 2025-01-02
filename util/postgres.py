@@ -8,7 +8,6 @@ import sqlalchemy.engine.base
 import torch
 from sqlalchemy import create_engine, Engine
 
-from util.baseline.model import ModelEuCoBase
 from util.homogeneous.model import ModelEuCoHM
 
 
@@ -189,7 +188,7 @@ def use_schema(conn: psycopg2.extensions.connection, schema: str) -> None:
 
 
 def save_author_embeddings(engine: Engine,
-                           model: ModelEuCoHM | ModelEuCoBase,
+                           model: ModelEuCoHM,
                            x: torch.Tensor,
                            edge_index: torch.Tensor,
                            author_id_map: dict,

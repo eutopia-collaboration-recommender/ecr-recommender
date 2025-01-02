@@ -1,13 +1,7 @@
 import torch
 
-from typing import Optional
-
-from torch import Tensor
 from torch.optim import Optimizer
 from torch_geometric.data import Data
-
-from torch_geometric.typing import Adj, OptTensor
-from torch_geometric.nn.models.lightgcn import LightGCN
 from torch_geometric.utils import structured_negative_sampling
 from torch_geometric.metrics.link_pred import (
     LinkPredMAP,
@@ -17,54 +11,11 @@ from torch_geometric.metrics.link_pred import (
     LinkPredRecall
 )
 
+from util.homogeneous.model import ModelEuCoHM
 from util.torch_geometric import LinkPredHitRate
 
 
-class ModelEuCoBase(torch.nn.Module):
-    def __init__(self,
-                 input_channels: int,
-                 hidden_channels: int,
-                 k: int,
-                 author_node_id_map: dict,
-                 author_id_map: dict,
-                 device: str):
-        super().__init__()
-
-        self.hidden_channels = hidden_channels
-        self.k = k
-
-        # Set mapper to contiguous ids
-        self.author_node_id_map: dict = author_node_id_map
-        self.author_id_map: dict = author_id_map
-
-        self.model = LightGCN(num_nodes=input_channels,
-                              embedding_dim=hidden_channels,
-                              num_layers=2).to(device)
-
-    def get_embedding(self,
-                      x: Tensor,
-                      edge_index: Adj) -> Tensor:
-        return self.model.get_embedding(edge_index=edge_index)
-
-    def forward(self,
-                x: Tensor,
-                edge_index: Adj,
-                edge_label_index: OptTensor = None) -> Tensor:
-        return self.model(edge_index, edge_label_index)
-
-    def recommendation_loss(self,
-                            x: Tensor,
-                            edge_index: Adj,
-                            pos_edge_rank: Tensor,
-                            neg_edge_rank: Tensor,
-                            node_id: Optional[Tensor] = None,
-                            lambda_reg: float = 1e-4) -> Tensor:
-        return self.model.recommendation_loss(pos_edge_rank=pos_edge_rank,
-                                              neg_edge_rank=neg_edge_rank,
-                                              node_id=node_id)
-
-
-def train(model: ModelEuCoBase,
+def train(model: ModelEuCoHM,
           data: Data,
           optimizer: Optimizer) -> float:
     # Set the model to training mode
@@ -114,7 +65,7 @@ def train(model: ModelEuCoBase,
 
 
 @torch.no_grad()
-def test(model: ModelEuCoBase,
+def test(model: ModelEuCoHM,
          data: Data) -> float:
     model.eval()
 
@@ -150,7 +101,7 @@ def test(model: ModelEuCoBase,
 
 
 @torch.no_grad()
-def evaluate(model: ModelEuCoBase,
+def evaluate(model: ModelEuCoHM,
              data: Data,
              device: str = 'cpu',
              k: int = 20) -> dict:
