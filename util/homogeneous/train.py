@@ -17,12 +17,20 @@ from util.torch_geometric import LinkPredHitRate
 
 def train(model: ModelEuCoHM,
           data: Data,
-          optimizer: Optimizer) -> float:
+          optimizer: Optimizer,
+          use_weighted_edges: bool = False) -> float:
     # Set the model to training mode
     model.train()
 
     # Get the positive edge index
     pos_edge_index = data.train_pos_edge_index
+
+    # Repeat the positive edge index based on the edge weights
+    if use_weighted_edges:
+        # Log the number of times each edge is repeated
+        repeat_counts = data.train_pos_edge_weight.log().ceil().long()
+        pos_edge_index = pos_edge_index.repeat_interleave(repeat_counts, dim=1)
+
     # Negative sampling
     neg_edge_index_i, neg_edge_index_j, neg_edge_index_k = structured_negative_sampling(
         edge_index=pos_edge_index,
@@ -66,11 +74,20 @@ def train(model: ModelEuCoHM,
 
 @torch.no_grad()
 def test(model: ModelEuCoHM,
-         data: Data) -> float:
+         data: Data,
+         use_weighted_edges: bool = False) -> float:
     model.eval()
 
     pos_edge_index = data.test_pos_edge_index
     neg_edge_index = data.test_neg_edge_index
+
+    # Repeat the positive and negative edge index based on the edge weights
+    # Note that this also multiplies an arbitrary negative edge if it coincides with a positive edge
+    if use_weighted_edges:
+        # Log the number of times each edge is repeated
+        repeat_counts = data.test_pos_edge_index.log().ceil().long()
+        pos_edge_index = pos_edge_index.repeat_interleave(repeat_counts, dim=1)
+        neg_edge_index = neg_edge_index.repeat_interleave(repeat_counts, dim=1)
 
     edge_label_index = torch.cat([
         pos_edge_index,
@@ -88,7 +105,8 @@ def test(model: ModelEuCoHM,
                                      edge_index=data.train_pos_edge_index,
                                      pos_edge_rank=pos_edge_rank,
                                      neg_edge_rank=neg_edge_rank,
-                                     node_id=edge_label_index.unique())
+                                     node_id=edge_label_index.unique(),
+                                     edge_weight=data.train_pos_edge_weight)
 
     total_loss = float(loss) * pos_edge_rank.numel()
     total_examples = pos_edge_rank.numel()

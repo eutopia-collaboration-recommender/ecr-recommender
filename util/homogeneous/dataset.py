@@ -1,8 +1,11 @@
+import datetime
+
 import numpy as np
 import pandas as pd
 import polars as pl
 import sqlalchemy
 import torch
+from sklearn.decomposition import PCA
 
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
@@ -11,81 +14,16 @@ from torch_geometric.data import Data
 from torch_geometric.utils import structured_negative_sampling
 from tqdm import tqdm
 from typing_extensions import Tuple
-from util.postgres import query, query_polars
+
+from util.homogeneous.query import query_article_embeddings, query_author_keyword_embeddings, query_edges_co_authors, \
+    query_nodes_author, \
+    query_nodes_author_articles, \
+    query_nth_time_percentile
 
 
-def query_nodes_author(conn: sqlalchemy.engine.base.Connection,
-                       table_name: str) -> pd.DataFrame:
-    # Get all authors data and value metrics about their collaboration
-    author_query: str = f"""
-    SELECT author_id,
-           publication_count,
-           author_embedding::FLOAT8[]
-    FROM {table_name}
-    """
-    print("Querying author nodes...")
-    author_df: pd.DataFrame = query(conn=conn, query_str=author_query)
-
-    return author_df
-
-
-def query_article_embeddings(engine: Engine,
-                             batch_size: int = 10000) -> pl.DataFrame:
-    with engine.raw_connection().cursor() as cur:
-        cur.execute("""
-            SELECT article_id, article_embedding::FLOAT8[]
-            FROM g_included_article_embedding
-        """)
-        # Initialize the Polars DataFrame
-        article_embedding_df: pl.DataFrame = pl.DataFrame()
-        ix = 0
-        # Fetch in chunks
-        while True:
-            rows = cur.fetchmany(size=batch_size)
-            if not rows:
-                break
-            # Append the rows to the Polars DataFrame
-            df_chunk = pl.DataFrame(rows, schema=["article_id", "article_embedding"], orient="row")
-
-            # Concatenate chunk with the master DataFrame
-            article_embedding_df = pl.concat([article_embedding_df, df_chunk], how="vertical")
-            print(f"Rows fetched {batch_size} for batch {ix}")
-            ix += 1
-
-        return article_embedding_df
-
-
-def query_nodes_author_articles(conn: sqlalchemy.engine.base.Connection) -> pl.DataFrame:
-    # Get all authors data and value metrics about their collaboration
-    author_articles_query: str = f"""
-        SELECT author_id,
-               article_id
-        FROM g_eucohm_node_author_article
-        """
-    print("Querying author articles...")
-    author_articles_df: pl.DataFrame = query_polars(conn=conn, query_str=author_articles_query)
-
-    return author_articles_df
-
-
-def query_edges_co_authors(conn: sqlalchemy.engine.base.Connection) -> pd.DataFrame:
-    # Get all edges between authors and co-authors
-    coauthored_query = f"""
-    SELECT author_id,
-           co_author_id,
-           time,
-           1 + eutopia_collaboration_count AS weight
-    FROM g_eucohm_edge_co_authors
-    """
-    print("Querying co-authorship edge data...")
-    coauthored_df = query(conn=conn, query_str=coauthored_query)
-
-    return coauthored_df
-
-
-def assert_bidirectional_edges(data: Data) -> None:
+def assert_bidirectional_edges(edges: torch.Tensor) -> None:
     # Transpose edge_index to get a list of edges
-    edges: torch.Tensor = data.edge_index.t()  # Shape: [num_edges, 2]
+    edges: torch.Tensor = edges.t()  # Shape: [num_edges, 2]
 
     # Create reverse edges by swapping columns
     reverse_edges: torch.Tensor = edges[:, [1, 0]]
@@ -117,23 +55,40 @@ def get_mapper_to_contiguous_ids(node_df: pd.DataFrame, id_column: str) -> Tuple
     return node_id_map, id_map
 
 
-def get_node_attributes_author(author_df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
+def get_node_attributes_author(
+        author_df: pd.DataFrame,
+        use_periodical_embedding_decay: bool = False,
+        use_top_keywords: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     # Sort author dataframe
     sorted_author_df = author_df.sort_values(by='author_node_id')
     # Exclude columns AUTHOR_ID, AUTHOR_NODE_ID
+    excluded_columns = ['author_id', 'author_node_id', 'author_embedding', 'keyword_popularity_embedding']
     x_author_columns = list(
-        filter(lambda x: x not in ('author_id', 'author_node_id', 'author_embedding'), sorted_author_df.columns))
+        filter(lambda x: x not in excluded_columns, sorted_author_df.columns))
 
-    # Convert EMBEDDING_TENSOR_DATA to proper format
+    # Convert author_embedding to proper format
     embedding_tensor_author = np.stack(sorted_author_df['author_embedding'].values)
     embedding_tensor_author = torch.tensor(embedding_tensor_author, dtype=torch.float)
 
     # Convert types
     x_author = sorted_author_df[x_author_columns].astype('float64').values
-
-    # Append embedding_tensor to x_author
     x_author = torch.tensor(x_author, dtype=torch.float)
-    x_author = torch.cat((x_author, embedding_tensor_author), dim=1)
+
+    # Include top keywords to the author features
+    if use_top_keywords:
+        # Convert keyword_popularity_embedding to proper format
+        embedding_tensor_keyword_popularity = np.stack(sorted_author_df['keyword_popularity_embedding'].values)
+        # Perform PCA reduction on keyword popularity embeddings: 345 components explain 80% of the variance as per (`notebooks/Top keyword embedding reduction.ipynb`)
+        pca = PCA(n_components=345)
+        embedding_tensor_keyword_popularity = pca.fit_transform(embedding_tensor_keyword_popularity)
+        embedding_tensor_keyword_popularity = torch.tensor(embedding_tensor_keyword_popularity, dtype=torch.float)
+
+        # Append embedding tensors to x_author
+        x_author = torch.cat((x_author, embedding_tensor_author, embedding_tensor_keyword_popularity), dim=1)
+    else:
+        # Append embedding tensors to x_author
+        x_author = torch.cat((x_author, embedding_tensor_author), dim=1)
 
     # Normalize X using std scaler
     x_author = StandardScaler().fit_transform(x_author)
@@ -145,7 +100,8 @@ def get_node_attributes_author(author_df: pd.DataFrame) -> Tuple[torch.Tensor, t
     return x_author, node_ids_author
 
 
-def get_edge_attributes_co_authors(co_authored_df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def get_edge_attributes_co_authors(co_authored_df: pd.DataFrame) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     # Sort article dataframe
     co_authored_df = co_authored_df.sort_values(by='author_node_id')
 
@@ -158,52 +114,135 @@ def get_edge_attributes_co_authors(co_authored_df: pd.DataFrame) -> Tuple[torch.
     edge_attr_co_authors = co_authored_df[co_authors_edge_attr_columns].astype('int64').values
 
     # Add edge index: for edges corresponding to authors co-authoring articles (author to author connection)
-    author_node_ids = torch.from_numpy(co_authored_df['author_node_id'].values)
-    coauthor_node_ids = torch.from_numpy(co_authored_df['co_author_node_id'].values)
+    author_node_ids = torch.from_numpy(co_authored_df['author_node_id'].values.astype('int64'))
+    coauthor_node_ids = torch.from_numpy(co_authored_df['co_author_node_id'].values.astype('int64'))
     edge_index_co_authors = torch.stack([author_node_ids, coauthor_node_ids], dim=0)
     edge_time_co_authors = torch.from_numpy(np.array(co_authored_df['time'].values.astype('int64')))
+    edge_weight_co_authors = torch.from_numpy(np.ceil(np.log(co_authored_df['weight']) + 1).values.astype('int64'))
 
-    return edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors
+    return edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors, edge_weight_co_authors
 
 
 class DatasetEuCoHM:
-    def __init__(self, pg_engine: Engine, num_train: float = 0.8):
+    def __init__(self, pg_engine: Engine,
+                 num_train: float = 0.8,
+                 use_periodical_embedding_decay: bool = False,
+                 use_top_keywords: bool = False):
+        # Postgres engine
         self.engine: Engine = pg_engine
+
+        # Number of training sample
         self.num_train: float = num_train
-        self.table_name: str = 'g_eucohm_node_author'
+
+        # Use periodical decay for embeddings that calculates a weighted sum of article embeddings, where the most
+        # recent articles have the highest weight. This way we get a stronger signal for the model to learn from
+        # most recent research periods of authors.
+        self.use_periodical_embedding_decay: bool = use_periodical_embedding_decay
+        # Include top keywords to the author features
+        self.use_top_keywords: bool = use_top_keywords
+
+        # Table name dependent on the number of periodical embeddings and top keywords flag
+        self.table_name: str = self.get_author_node_table_name()
+
+        # Placeholder class attributes for the dataset
         self.data: Data = Data()
         self.author_id_map: dict = dict()
         self.author_node_id_map: dict = dict()
 
-    def fill_g_nodes_author_table(self, conn: sqlalchemy.engine.base.Connection) -> pd.DataFrame:
-        author_articles_df: pd.DataFrame = query_nodes_author_articles(conn=conn)
-        article_embedding_df: pl.DataFrame = query_article_embeddings(engine=self.engine)
+    def get_author_node_table_name(self):
+        base_prefix = 'g_eucohm_node_author'
+        postfix = ''
+        if self.use_periodical_embedding_decay:
+            postfix += f'_periodical_decay'
+        else:
+            postfix = '_base'
+
+        return f'{base_prefix}{postfix}'
+
+    def get_dataset_name(self):
+        base_prefix = 'dataset_homogeneous'
+        postfix = ''
+        if self.use_periodical_embedding_decay:
+            postfix += f'_periodical_decay'
+        if self.use_top_keywords:
+            postfix += '_top_keywords'
+        if self.num_train == 1:
+            postfix += '_full'
+        if postfix == '':
+            postfix = '_base'
+
+        return f'{base_prefix}{postfix}'
+
+    def fill_author_article_embedding(self, conn: sqlalchemy.engine.base.Connection,
+                                      filter_dt: datetime.datetime) -> pd.DataFrame:
+        author_articles_df: pl.DataFrame = query_nodes_author_articles(conn=conn, filter_dt=filter_dt)
+        article_embedding_df: pl.DataFrame = query_article_embeddings(engine=self.engine, filter_dt=filter_dt)
 
         # Go through all the authors and average their embeddings
         print("Processing the author embeddings...")
         author_embeddings: list = list()
         for author_id in tqdm(author_articles_df['author_id'].unique()):
             # Get all articles for the author
-            articles: pd.Series
-
-            articles: pl.Series = author_articles_df.filter(pl.col('author_id') == author_id)['article_id']
+            articles: pl.Series = author_articles_df \
+                .filter(pl.col('author_id') == author_id)['article_id']
             # Get the embeddings for the articles
-            embeddings: pl.Series = article_embedding_df.filter(pl.col('article_id').is_in(articles))[
-                'article_embedding']
-            embedding_values = embeddings.to_numpy()
-            # Average the embeddings
-            avg_embedding = np.mean(embedding_values, axis=0)
-            pg_avg_embedding = '{' + ','.join(map(str, avg_embedding.tolist())) + '}'
+            embeddings: pl.Series = article_embedding_df \
+                .filter(pl.col('article_id').is_in(articles)) \
+                .sort(by='article_publication_dt', descending=False)['article_embedding']
+
+            # Calculate weights for the embeddings based on the publication date
+            embedding_weights: np.ndarray = 1 / (((
+                                                          (filter_dt - article_embedding_df \
+                                                           .filter(pl.col('article_id').is_in(articles)) \
+                                                           .sort(by='article_publication_dt', descending=False
+                                                                 )[
+                                                              'article_publication_dt']).dt.total_days() / 365).ceil() + 1).log() + 1)
+            # Min cap the weights
+            min_weight = 0.05
+            embedding_weights = np.maximum(embedding_weights, min_weight)
+            # Normalize the weights
+            embedding_weights = embedding_weights / embedding_weights.sum()
+
+            # Convert to numpy array
+            embedding_ndarray = np.array(embeddings.to_list())
+
+            if self.use_periodical_embedding_decay:
+                # Calculate a weighted sum of the embeddings based on the publication date, where the most recent articles have the highest weight
+                weighted_avg_embeddings = np.average(embedding_ndarray, axis=0, weights=embedding_weights)
+                pg_avg_embedding = '{' + ','.join(map(str, weighted_avg_embeddings.tolist())) + '}'
+            else:
+                # Average the embeddings
+                avg_embedding = np.mean(embedding_ndarray, axis=0)
+                pg_avg_embedding = '{' + ','.join(map(str, avg_embedding.tolist())) + '}'
+
+            citations = author_articles_df \
+                .filter(pl.col('author_id') == author_id)['article_citation_normalized_count'] \
+                .median()
+            collaboration_novelty_index = author_articles_df \
+                .filter(pl.col('author_id') == author_id)['collaboration_novelty_index'] \
+                .median()
 
             # Append the author embedding to the list
             author_embeddings.append(dict(
                 author_id=author_id,
                 author_embedding=pg_avg_embedding,
-                publication_count=len(articles)
+                publication_count=len(articles),
+                article_citation_normalized_count=float(citations if citations is not None else 0),
+                collaboration_novelty_index=float(
+                    collaboration_novelty_index if collaboration_novelty_index is not None else 0),
+
             ))
 
         # Create a DataFrame from the dictionary
         author_embedding_df = pd.DataFrame(author_embeddings)
+
+        # Include top keywords to the author features
+        author_keyword_popularity_df = query_author_keyword_embeddings(conn=conn, filter_dt=filter_dt)
+        author_keyword_popularity_df['keyword_popularity_embedding'] = \
+            author_keyword_popularity_df['keyword_popularity_embedding'].apply(
+                lambda x: str(x).replace('[', '{').replace(']', '}')
+            )
+        author_embedding_df = author_embedding_df.merge(author_keyword_popularity_df, on='author_id', how='left')
 
         # Write the DataFrame to the database
         print("Writing the author embeddings to the database...")
@@ -211,15 +250,19 @@ class DatasetEuCoHM:
 
         return author_embedding_df
 
-    def split_to_train_and_test(self, data):
-        time = data.edge_time
-        perm = time.argsort()
-        train_index = perm[:int(self.num_train * perm.numel())]
-        test_index = perm[int(self.num_train * perm.numel()):]
+    def split_to_train_and_test(self, data, filter_dt: datetime.datetime):
+        time: torch.Tensor = data.edge_time
+        perm: torch.Tensor = time.argsort()
+        filter_time = int(filter_dt.strftime('%Y%m%d'))
+        # Get indices where time is less than filter time
+        train_index = perm[time[perm] <= filter_time]
+        test_index = perm[time[perm] > filter_time]
 
         # Edge index
         data.train_pos_edge_index = data.edge_index[:, train_index]
+        data.train_pos_edge_weight = data.edge_weight[train_index]
         data.test_pos_edge_index = data.edge_index[:, test_index]
+        data.test_pos_edge_weight = data.edge_weight[test_index]
 
         # Add negative samples to test
         neg_edge_index_i, neg_edge_index_j, neg_edge_index_k = structured_negative_sampling(
@@ -228,14 +271,16 @@ class DatasetEuCoHM:
         )
         data.test_neg_edge_index = torch.stack([neg_edge_index_i, neg_edge_index_k], dim=0)
 
-        # data.edge_index = data.edge_attr = data.edge_time = None
         return data
 
-    def to_pyg_data(self, x_author: torch.Tensor,
+    def to_pyg_data(self,
+                    x_author: torch.Tensor,
                     node_ids_author: torch.Tensor,
                     edge_index_co_authors: torch.Tensor,
                     edge_attr_co_authors: torch.Tensor,
-                    edge_time_co_authors: torch.Tensor) -> Data:
+                    edge_time_co_authors: torch.Tensor,
+                    edge_weight_co_authors: torch.Tensor,
+                    filter_dt: datetime.datetime) -> Data:
         # Initialize the PyG Data object
         data: Data = Data()
 
@@ -245,6 +290,7 @@ class DatasetEuCoHM:
         data.edge_index = edge_index_co_authors
         data.edge_attr = torch.from_numpy(edge_attr_co_authors).to(torch.float)
         data.edge_time = edge_time_co_authors
+        data.edge_weight = edge_weight_co_authors
 
         # Set X for author nodes
         data.x = torch.from_numpy(x_author).to(torch.float)
@@ -254,12 +300,13 @@ class DatasetEuCoHM:
         data.num_nodes = data.x.shape[0]
 
         # Split to train and test
-        data = self.split_to_train_and_test(data)
+        data = self.split_to_train_and_test(data=data, filter_dt=filter_dt)
 
         return data
 
     def build_homogeneous_graph(self) -> (Data, dict, dict):
         with  self.engine.connect() as conn:
+            filter_dt = query_nth_time_percentile(conn=conn, percentile=self.num_train)
             co_authored_df: pd.DataFrame = query_edges_co_authors(conn=conn)
             try:
                 author_df: pd.DataFrame = query_nodes_author(conn=conn, table_name=self.table_name)
@@ -267,7 +314,8 @@ class DatasetEuCoHM:
                 # Initiate a new connection since the last one was interrupted
                 with self.engine.connect() as conn_2:
                     print(f"Table {self.table_name} does not exist. Creating the table...")
-                    author_df: pd.DataFrame = self.fill_g_nodes_author_table(conn=conn_2)
+                    self.fill_author_article_embedding(conn=conn_2, filter_dt=filter_dt)
+                    author_df: pd.DataFrame = query_nodes_author(conn=conn_2, table_name=self.table_name)
 
             # Get the mapping to contiguous IDs
             author_node_id_map: dict
@@ -279,23 +327,37 @@ class DatasetEuCoHM:
             co_authored_df['author_node_id'] = co_authored_df['author_id'].map(author_node_id_map)
             co_authored_df['co_author_node_id'] = co_authored_df['co_author_id'].map(author_node_id_map)
 
+            # Drop all rows with NaN values in author_node_id or co_author_node_id
+            # These are the authors that first published after the filter date, i.e. if we picture
+            # ourselves in the past, we would not know these authors existed yet.
+            co_authored_df = co_authored_df.dropna(subset=['author_node_id', 'co_author_node_id'])
+
             # Get node attributes
             x_author: torch.Tensor
             node_ids_author: torch.Tensor
-            x_author, node_ids_author = get_node_attributes_author(author_df=author_df)
+            x_author, node_ids_author = get_node_attributes_author(
+                author_df=author_df,
+                use_top_keywords=self.use_top_keywords
+            )
+
             # Get edge attributes
             edge_index_co_authors: torch.Tensor
             edge_attr_co_authors: torch.Tensor
             edge_time_co_authors: torch.Tensor
-            edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors = get_edge_attributes_co_authors(
-                co_authored_df=co_authored_df)
+            edge_weight_co_authors: torch.Tensor
+            edge_index_co_authors, edge_attr_co_authors, edge_time_co_authors, edge_weight_co_authors = \
+                get_edge_attributes_co_authors(
+                    co_authored_df=co_authored_df
+                )
 
             # Create the PyG Data object
             data = self.to_pyg_data(x_author=x_author,
                                     node_ids_author=node_ids_author,
                                     edge_index_co_authors=edge_index_co_authors,
                                     edge_attr_co_authors=edge_attr_co_authors,
-                                    edge_time_co_authors=edge_time_co_authors)
+                                    edge_time_co_authors=edge_time_co_authors,
+                                    edge_weight_co_authors=edge_weight_co_authors,
+                                    filter_dt=filter_dt)
 
             # Set the dataset attributes
             self.data = data

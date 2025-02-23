@@ -1,8 +1,4 @@
-from typing import Tuple
-
 import pandas as pd
-import psycopg2
-import sqlalchemy
 import torch
 from box import Box
 from sqlalchemy import Engine
@@ -12,8 +8,10 @@ from torch_geometric.data import Data
 from tqdm import tqdm
 
 from util.homogeneous.dataset import DatasetEuCoHM
-from util.homogeneous.model import evaluate, ModelEuCoHM, test, train
-from util.postgres import create_connection, create_sqlalchemy_engine, save_author_embeddings
+from util.homogeneous.model import ModelEuCoHM
+from util.homogeneous.train import evaluate, test, train
+
+from util.postgres import create_sqlalchemy_engine, save_author_embeddings
 
 
 def train_and_evaluate(model: ModelEuCoHM,
@@ -82,7 +80,7 @@ def main(engine: Engine,
     model = ModelEuCoHM(
         input_channels=data.num_features,
         hidden_channels=model_config['hidden_channels'],
-        k=model_config['num_recommendations'],
+        num_recommendations=model_config['num_recommendations'],
         author_node_id_map=author_node_id_map,
         author_id_map=author_id_map
     ).to(device)

@@ -118,9 +118,8 @@ class ModelEuCoHM(torch.nn.Module):
                             edge_index: Adj,
                             pos_edge_rank: Tensor,
                             neg_edge_rank: Tensor,
-                            pos_edge_index: Adj,
-                            neg_edge_index: Adj,
                             node_id: Optional[Tensor] = None,
+                            edge_weight: Optional[Tensor] = None,
                             lambda_reg: float = 1e-4) -> Tensor:
         loss_fn = BPRLoss(lambda_reg)
         # Get the embedding
