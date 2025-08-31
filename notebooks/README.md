@@ -27,8 +27,8 @@ we will test the importance of the following properties:
 | [F](model_F.ipynb) | Transformer | Homogeneous   | BCEWLL | average                     | No               | 
 | [G](model_G.ipynb) | GATv2       | Heterogeneous | BPR    | average                     | No               | 
 | [H](model_G.ipynb) | Transformer | Heterogeneous | BPR    | average                     | No               | 
-| [I](model_H.ipynb) | GATv2       | Homogeneous   | BCEWLL | uniform periodical averages | No               | 
-| [J](model_J.ipynb) | GATv2       | Homogeneous   | BCEWLL | average                     | Yes              | 
+| [I](model_H.ipynb) | GATv2       | Homogeneous   | BPR    | weighted periodical average | No               | 
+| [J](model_J.ipynb) | GATv2       | Homogeneous   | BPR    | average                     | Yes              | 
 
 ### Additional notebooks
 

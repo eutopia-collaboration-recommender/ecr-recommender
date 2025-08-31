@@ -52,8 +52,9 @@ async def lifespan(app: FastAPI):
     # Initiate and load the model
     models['EuCoHM'] = ModelEuCoHM(
         input_channels=datasets['EuCoHM']['data'].num_features,
-        hidden_channels=config.MODEL.HOMOGENEOUS.HIDDEN_CHANNELS,
-        k=config.MODEL.HOMOGENEOUS.NUM_RECOMMENDATIONS,
+        hidden_channels=128,
+        num_recommendations=10,
+        num_layers=4,
         author_node_id_map=datasets['EuCoHM']['author_node_id_map'],
         author_id_map=datasets['EuCoHM']['author_id_map']
     )
