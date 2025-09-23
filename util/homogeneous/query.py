@@ -18,7 +18,7 @@ def query_nodes_author(conn: sqlalchemy.engine.base.Connection,
            collaboration_novelty_index,
            author_embedding::FLOAT8[]               AS author_embedding,
            keyword_popularity_embedding::FLOAT8[]   AS keyword_popularity_embedding 
-    FROM {table_name}
+    FROM {table_name};
     """
     print("Querying author nodes...")
     author_df: pd.DataFrame = query(conn=conn, query_str=author_query)

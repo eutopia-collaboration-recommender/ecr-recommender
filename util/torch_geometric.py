@@ -6,7 +6,6 @@ from typing import Tuple
 from torch import Tensor
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
-
 class LinkPredHitRate(LinkPredMetric):
     higher_is_better: bool = True
 
@@ -42,7 +41,8 @@ def get_results(epoch: int,
                 test_loss: float,
                 evaluation_results: dict,
                 verbose: bool = True,
-                log_every_n_epochs: int = 1) -> dict:
+                log_every_n_epochs: int = 1,
+                bootstrap_id: int = None) -> dict:
     # Save results
     epoch_result = {
         'Epoch': epoch,
@@ -55,6 +55,9 @@ def get_results(epoch: int,
         'NDCG@k': float(evaluation_results['ndcg@k'].compute()),
         'HitRate@k': float(evaluation_results['hit_rate@k'].compute())
     }
+
+    if bootstrap_id is not None:
+        epoch_result['Bootstrap ID'] = bootstrap_id
 
     # Print results
     if verbose and epoch % log_every_n_epochs == 0:

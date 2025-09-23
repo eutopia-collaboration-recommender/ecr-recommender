@@ -1,3 +1,5 @@
+import hashlib
+import pickle
 import torch
 import sqlalchemy
 import numpy as np
@@ -13,6 +15,21 @@ from torch_geometric.utils import structured_negative_sampling
 
 from util.postgres import query
 from util.torch_geometric import get_mapper_to_contiguous_ids
+
+
+def load_dataset(dataset_filepath: str = None, device: str = 'cpu') -> Tuple[Data, dict, dict]:
+    # Add the object as a safe global to shut down warning
+    torch.serialization.add_safe_globals([DatasetEuCoHT])
+    # Open the dataset file and save it to variable
+    with open(dataset_filepath, 'rb') as file:
+        dataset: DatasetEuCoHT = pickle.load(file)
+
+    data = dataset.data
+    # Transfer to device
+    data = data.to(device)
+    author_id_map = dataset.author_id_map
+    author_node_id_map = dataset.author_node_id_map
+    return data, author_id_map, author_node_id_map
 
 
 def query_nodes_author(conn: sqlalchemy.engine.base.Connection) -> pd.DataFrame:
@@ -168,7 +185,8 @@ class DatasetEuCoHT:
     def __init__(self, pg_engine: Engine,
                  num_train: float = 0.8,
                  target_edge_type: tuple = ('author', 'co_authors', 'author'),
-                 target_node_type: str = 'author'):
+                 target_node_type: str = 'author',
+                 bootstrap_id: int = None):
         self.engine: Engine = pg_engine
         self.num_train: float = num_train
         self.data: Data = Data()
@@ -177,7 +195,10 @@ class DatasetEuCoHT:
         self.author_id_map: dict = dict()
         self.author_node_id_map: dict = dict()
 
-    def build_homogeneous_graph(self) -> (Data, dict, dict):
+        # Boostrap identifier
+        self.bootstrap_id = bootstrap_id
+
+    def build_heterogeneous_graph(self) -> (Data, dict, dict):
         with self.engine.connect() as conn:
             co_authored_df: pd.DataFrame = query_edges_co_authors(conn=conn)
             author_df: pd.DataFrame = query_nodes_author(conn=conn)
@@ -206,6 +227,25 @@ class DatasetEuCoHT:
             # For articles
             article_df['article_node_id'] = article_df['article_id'].map(article_id_map)
             published_df['article_node_id'] = published_df['article_id'].map(article_node_id_map)
+
+            # BOOTSTRAP: When creating bootstrapping datasets, we drop 10% of edges randomly
+            if self.bootstrap_id is not None:
+                combined = (
+                        np.minimum(co_authored_df['author_node_id'], co_authored_df['co_author_node_id']).astype('int64').astype(str)
+                        + '-' +
+                        np.maximum(co_authored_df['author_node_id'], co_authored_df['co_author_node_id']).astype('int64').astype(str)
+                        + f'#{self.bootstrap_id}'
+                )
+
+                # Hash each row with md5
+                hashed = combined.apply(lambda x: hashlib.md5(x.encode('utf-8')).hexdigest())
+                # Get unique hashes
+                unique_hashes = hashed.dropna().unique()
+
+                # Randomly choose 10% of unique hashes
+                n_remove = int(len(unique_hashes) * 0.10)
+                hashes_to_remove = np.random.choice(unique_hashes, size=n_remove, replace=False)
+                co_authored_df = co_authored_df[~hashed.isin(hashes_to_remove)].reset_index(drop=True)  # Keep ≈90% of data
 
             # Get node attributes
             x_author: torch.Tensor

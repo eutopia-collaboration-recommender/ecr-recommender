@@ -1,15 +1,17 @@
 import datetime
+import pickle
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import sqlalchemy
 import torch
+import hashlib
 from sklearn.decomposition import PCA
 
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import (OperationalError, ProgrammingError)
 from torch_geometric.data import Data
 from torch_geometric.utils import structured_negative_sampling
 from tqdm import tqdm
@@ -19,6 +21,21 @@ from util.homogeneous.query import query_article_embeddings, query_author_keywor
     query_nodes_author, \
     query_nodes_author_articles, \
     query_nth_time_percentile
+
+
+def load_dataset(dataset_filepath: str = None, device: str = 'cpu') -> Tuple[Data, dict, dict]:
+    # Add the object as a safe global to shut down warning
+    torch.serialization.add_safe_globals([DatasetEuCoHM])
+    # Open the dataset file and save it to variable
+    with open(dataset_filepath, 'rb') as file:
+        dataset: DatasetEuCoHM = pickle.load(file)
+
+    data = dataset.data
+    # Transfer to device
+    data = data.to(device)
+    author_id_map = dataset.author_id_map
+    author_node_id_map = dataset.author_node_id_map
+    return data, author_id_map, author_node_id_map
 
 
 def assert_bidirectional_edges(edges: torch.Tensor) -> None:
@@ -57,7 +74,6 @@ def get_mapper_to_contiguous_ids(node_df: pd.DataFrame, id_column: str) -> Tuple
 
 def get_node_attributes_author(
         author_df: pd.DataFrame,
-        use_periodical_embedding_decay: bool = False,
         use_top_keywords: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # Sort author dataframe
@@ -126,6 +142,7 @@ def get_edge_attributes_co_authors(co_authored_df: pd.DataFrame) -> Tuple[
 class DatasetEuCoHM:
     def __init__(self, pg_engine: Engine,
                  num_train: float = 0.8,
+                 bootstrap_id: int = None,
                  use_periodical_embedding_decay: bool = False,
                  use_top_keywords: bool = False):
         # Postgres engine
@@ -133,6 +150,9 @@ class DatasetEuCoHM:
 
         # Number of training sample
         self.num_train: float = num_train
+
+        # Boostrap identifier
+        self.bootstrap_id = bootstrap_id
 
         # Use periodical decay for embeddings that calculates a weighted sum of article embeddings, where the most
         # recent articles have the highest weight. This way we get a stronger signal for the model to learn from
@@ -170,6 +190,9 @@ class DatasetEuCoHM:
             postfix += '_full'
         if postfix == '':
             postfix = '_base'
+
+        if self.bootstrap_id is not None:
+            postfix += f'_b{self.bootstrap_id}'
 
         return f'{base_prefix}{postfix}'
 
@@ -250,13 +273,15 @@ class DatasetEuCoHM:
 
         return author_embedding_df
 
-    def split_to_train_and_test(self, data, filter_dt: datetime.datetime):
+    def split_to_train_and_test(self, data, filter_dt: datetime.datetime, bootstrap_id: int = None):
         time: torch.Tensor = data.edge_time
         perm: torch.Tensor = time.argsort()
         filter_time = int(filter_dt.strftime('%Y%m%d'))
         # Get indices where time is less than filter time
         train_index = perm[time[perm] <= filter_time]
         test_index = perm[time[perm] > filter_time]
+
+
 
         # Edge index
         data.train_pos_edge_index = data.edge_index[:, train_index]
@@ -331,6 +356,25 @@ class DatasetEuCoHM:
             # These are the authors that first published after the filter date, i.e. if we picture
             # ourselves in the past, we would not know these authors existed yet.
             co_authored_df = co_authored_df.dropna(subset=['author_node_id', 'co_author_node_id'])
+
+            # BOOTSTRAP: When creating bootstrapping datasets, we drop 10% of edges randomly
+            if self.bootstrap_id is not None:
+                combined = (
+                        np.minimum(co_authored_df['author_node_id'], co_authored_df['co_author_node_id']).astype('int64').astype(str)
+                        + '-' +
+                        np.maximum(co_authored_df['author_node_id'], co_authored_df['co_author_node_id']).astype('int64').astype(str)
+                        + f'#{self.bootstrap_id}'
+                )
+
+                # Hash each row with md5
+                hashed = combined.apply(lambda x: hashlib.md5(x.encode('utf-8')).hexdigest())
+                # Get unique hashes
+                unique_hashes = hashed.dropna().unique()
+
+                # Randomly choose 10% of unique hashes
+                n_remove = int(len(unique_hashes) * 0.10)
+                hashes_to_remove = np.random.choice(unique_hashes, size=n_remove, replace=False)
+                co_authored_df = co_authored_df[~hashed.isin(hashes_to_remove)].reset_index(drop=True)  # Keep ≈90% of data
 
             # Get node attributes
             x_author: torch.Tensor
