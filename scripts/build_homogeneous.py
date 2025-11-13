@@ -16,7 +16,7 @@ def main(engine: Engine) -> None:
     # Build the homogeneous graph
     # No data manipulation for bootstrapping
     if NO_BOOTSTRAP is None:
-        dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine, num_train=1, use_periodical_embedding_decay=True)
+        dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine, num_train=0.7, use_periodical_embedding_decay=True, use_top_keywords=True)
         dataset.build_homogeneous_graph()
         dataset.close_engine()
 
@@ -25,7 +25,7 @@ def main(engine: Engine) -> None:
     # For bootstrapping uncertainty
     else:
         for bootstrap_id in range(NO_BOOTSTRAP):
-            dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine, bootstrap_id=bootstrap_id, num_train=1, use_periodical_embedding_decay=True)
+            dataset: DatasetEuCoHM = DatasetEuCoHM(pg_engine=engine, bootstrap_id=bootstrap_id, num_train=0.7, use_periodical_embedding_decay=True, use_top_keywords=True)
             dataset.build_homogeneous_graph()
             dataset.close_engine()
             with open(f'../data/{dataset.get_dataset_name()}.pkl', 'wb') as output:
